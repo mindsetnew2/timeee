@@ -1,5 +1,4 @@
 name: Tor Selenium Bot
-
 on:
   workflow_dispatch:
     inputs:
@@ -28,10 +27,7 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y tor
-        
-        # Install Firefox using snap
-        sudo snap install firefox
+        sudo apt-get install -y tor firefox-esr xvfb
         
         # Download and install geckodriver
         GECKODRIVER_VERSION=0.34.0
@@ -39,43 +35,84 @@ jobs:
         tar -xzf geckodriver-v${GECKODRIVER_VERSION}-linux64.tar.gz
         sudo mv geckodriver /usr/local/bin/
         sudo chmod +x /usr/local/bin/geckodriver
-        
-        # Create Firefox symlink for compatibility
-        sudo ln -sf /snap/bin/firefox /usr/bin/firefox
+        rm geckodriver-v${GECKODRIVER_VERSION}-linux64.tar.gz
         
         # Verify installations
-        firefox --version
+        firefox --version || firefox-esr --version
         geckodriver --version
         tor --version
     
     - name: Install Python dependencies
       run: |
-        pip install selenium
+        pip install selenium requests stem
     
     - name: Configure Tor
       run: |
-        # Create tor configuration
+        # Stop any existing tor service
+        sudo systemctl stop tor || true
+        
+        # Create tor data directory
+        sudo mkdir -p /var/lib/tor
+        sudo chown -R debian-tor:debian-tor /var/lib/tor
+        sudo chmod 700 /var/lib/tor
+        
+        # Create custom tor configuration
         sudo tee /etc/tor/torrc > /dev/null <<EOF
         SocksPort 9050
         ControlPort 9051
         DataDirectory /var/lib/tor
-        RunAsDaemon 1
+        CookieAuthentication 1
+        CookieAuthFileGroupReadable 1
+        Log notice stdout
         EOF
         
         # Set proper permissions
-        sudo chown -R debian-tor:debian-tor /var/lib/tor
-        sudo chmod 700 /var/lib/tor
+        sudo chmod 644 /etc/tor/torrc
     
     - name: Start Tor service
       run: |
-        sudo systemctl enable tor
-        sudo systemctl start tor
-        sleep 10
-        # Verify Tor is running
-        sudo systemctl status tor
+        # Start tor in background
+        sudo -u debian-tor tor -f /etc/tor/torrc &
+        TOR_PID=$!
+        echo "TOR_PID=$TOR_PID" >> $GITHUB_ENV
+        
+        # Wait for tor to start
+        echo "Waiting for Tor to start..."
+        sleep 15
+        
+        # Check if tor is listening on the expected ports
+        if netstat -tuln | grep -q ":9050"; then
+            echo "✅ Tor SOCKS proxy is running on port 9050"
+        else
+            echo "❌ Tor SOCKS proxy is not running on port 9050"
+            sudo pkill -f tor || true
+            exit 1
+        fi
+        
+        if netstat -tuln | grep -q ":9051"; then
+            echo "✅ Tor control port is running on port 9051"
+        else
+            echo "⚠️ Tor control port is not running on port 9051 (may be OK)"
+        fi
+        
+        # Test tor connectivity
+        echo "Testing Tor connectivity..."
+        curl --socks5-hostname 127.0.0.1:9050 -s "https://check.torproject.org/api/ip" | head -20 || echo "Tor connectivity test failed, but continuing..."
     
-    - name: Run bot
+    - name: Create logs directory
+      run: mkdir -p logs
+    
+    - name: Run bot with virtual display
       run: |
+        # Start virtual display for headless browser
+        export DISPLAY=:99
+        Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
+        XVFB_PID=$!
+        echo "XVFB_PID=$XVFB_PID" >> $GITHUB_ENV
+        
+        sleep 5
+        
+        # Run the bot
         python tor_selenium_bot.py
     
     - name: Upload logs
@@ -86,7 +123,16 @@ jobs:
         path: logs/
         retention-days: 7
     
-    - name: Stop Tor service
+    - name: Cleanup
       if: always()
       run: |
-        sudo systemctl stop tor
+        # Stop Xvfb if running
+        if [ ! -z "$XVFB_PID" ]; then
+          kill $XVFB_PID || true
+        fi
+        
+        # Stop Tor if running
+        if [ ! -z "$TOR_PID" ]; then
+          kill $TOR_PID || true
+        fi
+        sudo pkill -f tor || true
