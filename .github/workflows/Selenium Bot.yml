@@ -6,11 +6,11 @@ on:
       target_url:
         description: 'URL to visit'
         required: true
-        default: 'https://httpbin.org/ip'
+        default: 'https://x.com/Hitansh54/status/1931754193489957133'
         type: string
   schedule:
-    # Run daily at 12:00 UTC (optional)
-    - cron: '0 12 * * *'
+    # Run every 5 hours (at 00:00, 05:00, 10:00, 15:00, 20:00 UTC)
+    - cron: '0 */5 * * *'
 
 jobs:
   run-bot:
@@ -68,7 +68,7 @@ jobs:
     
     - name: Upload logs
       if: always()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: bot-logs
         path: logs/
