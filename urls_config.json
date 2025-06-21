@@ -1,0 +1,38 @@
+{
+  "urls": [
+    {
+      "url": "https://httpbin.org/ip",
+      "name": "IP Check Test",
+      "enabled": true
+    },
+    {
+      "url": "https://httpbin.org/user-agent",
+      "name": "User Agent Test",
+      "enabled": true
+    },
+    {
+      "url": "https://x.com/Hitansh54/status/1931754193489957133",
+      "name": "Headers Test",
+      "enabled": true
+    },
+    {
+      "url": "https://x.com/Hitansh54/status/1936002137835946320",
+      "name": "Example Website",
+      "enabled": true
+    },
+    {
+      "url": "https://x.com/Hitansh54/status/1931753957191287157",
+      "name": "DuckDuckGo Search",
+      "enabled": true
+    }
+  ],
+  "settings": {
+    "cycles_per_url": 20,
+    "min_delay_between_cycles": 5,
+    "max_delay_between_cycles": 15,
+    "min_reading_time": 2,
+    "max_reading_time": 5,
+    "page_load_timeout": 30,
+    "browser_headless": true
+  }
+}
