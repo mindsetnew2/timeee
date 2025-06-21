@@ -89,60 +89,90 @@ class TorSeleniumBot:
         
         self.logger.info(f"📝 Created default URL configuration file: {config_file}")
     
-    def check_tor_running(self, port=9050):
-        """Check if Tor is already running on the specified port"""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1)
-            result = sock.connect_ex(('127.0.0.1', port))
-            sock.close()
-            return result == 0
-        except Exception:
-            return False
+    def check_tor_running(self, port=9050, timeout=30):
+        """Check if Tor is already running on the specified port with extended timeout"""
+        self.logger.info(f"🔍 Checking if Tor is running on port {port} (timeout: {timeout}s)...")
+        
+        for attempt in range(timeout):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex(('127.0.0.1', port))
+                sock.close()
+                
+                if result == 0:
+                    self.logger.info(f"✅ Tor found running on port {port} (attempt {attempt + 1})")
+                    return True
+                else:
+                    if attempt + 1 < timeout:
+                        self.logger.info(f"⏳ Attempt {attempt + 1}/{timeout}: Tor not ready, waiting 1 second...")
+                        time.sleep(1)
+                    
+            except Exception as e:
+                if attempt + 1 < timeout:
+                    self.logger.warning(f"⏳ Attempt {attempt + 1}/{timeout}: Error checking Tor - {e}")
+                    time.sleep(1)
+        
+        self.logger.warning(f"❌ Tor not found running on port {port} after {timeout} seconds")
+        return False
     
     def start_tor(self):
-        """Start Tor service or check if already running"""
+        """Start Tor service or check if already running with extended timeout"""
         try:
             # Check if Tor is already running (e.g., in GitHub Actions)
             if os.environ.get('TOR_ALREADY_RUNNING') == 'true':
-                self.logger.info("🌐 Tor is already running (detected from environment)")
-                if self.check_tor_running():
-                    self.logger.info("✅ Tor SOCKS proxy confirmed running on port 9050")
+                self.logger.info("🌐 Environment indicates Tor is already running - performing extended check...")
+                if self.check_tor_running(timeout=45):  # Extended timeout for CI environments
+                    self.logger.info("✅ Tor SOCKS proxy confirmed running - skipping Tor startup")
                     return True
                 else:
-                    self.logger.error("❌ Environment says Tor is running but port 9050 is not accessible")
+                    self.logger.error("❌ Environment says Tor is running but port 9050 is not accessible after extended check")
                     return False
             
-            # Check if Tor is already running on port 9050
-            if self.check_tor_running():
-                self.logger.info("🌐 Tor is already running on port 9050")
+            # Check if Tor is already running on port 9050 (quick check first)
+            self.logger.info("🔍 Performing quick Tor connectivity check...")
+            if self.check_tor_running(timeout=5):  # Quick check
+                self.logger.info("🌐 Tor is already running on port 9050 - skipping startup")
                 return True
             
             # Try to start Tor service
-            self.logger.info("🌐 Starting Tor service...")
+            self.logger.info("🌐 Tor not detected - attempting to start Tor service...")
             subprocess.run(['sudo', 'service', 'tor', 'start'], check=True, capture_output=True)
-            time.sleep(5)  # Wait for Tor to start
             
-            # Verify Tor is running
+            # Extended wait for Tor to start
+            self.logger.info("⏳ Waiting for Tor service to start (up to 30 seconds)...")
+            time.sleep(3)  # Initial wait
+            
+            if self.check_tor_running(timeout=30):  # Extended check after starting
+                self.logger.info("✅ Tor service started and verified successfully")
+                return True
+            
+            # Verify using service status as fallback
             result = subprocess.run(['sudo', 'service', 'tor', 'status'], capture_output=True, text=True)
             if "active (running)" in result.stdout:
-                self.logger.info("✅ Tor service started successfully")
-                return True
+                self.logger.info("✅ Tor service reports as active - performing final connectivity check...")
+                if self.check_tor_running(timeout=15):  # Final check
+                    return True
+                else:
+                    self.logger.error("❌ Tor service is active but port 9050 is not accessible")
+                    return False
             else:
                 self.logger.error("❌ Tor service failed to start properly")
                 return False
                 
         except subprocess.CalledProcessError as e:
-            self.logger.error(f"❌ Failed to start Tor: {e}")
-            # Try to check if Tor is running anyway
-            if self.check_tor_running():
+            self.logger.error(f"❌ Failed to start Tor service: {e}")
+            # Try to check if Tor is running anyway (might have been started differently)
+            self.logger.info("🔍 Checking if Tor is running despite service command failure...")
+            if self.check_tor_running(timeout=15):
                 self.logger.info("✅ Tor appears to be running despite service command failure")
                 return True
             return False
         except Exception as e:
             self.logger.error(f"❌ Error checking/starting Tor: {e}")
             # Try to check if Tor is running anyway
-            if self.check_tor_running():
+            self.logger.info("🔍 Performing final Tor connectivity check...")
+            if self.check_tor_running(timeout=15):
                 self.logger.info("✅ Tor appears to be running despite error")
                 return True
             return False
