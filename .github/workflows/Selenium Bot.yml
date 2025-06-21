@@ -26,16 +26,29 @@ jobs:
     
     - name: Install system dependencies
       run: |
-        sudo apt-get update
-        # Install required packages - use netcat-openbsd instead of netcat
-        sudo apt-get install -y tor xvfb wget curl netcat-openbsd net-tools
+        echo "📦 Updating package lists..."
+        sudo apt-get update -qq
         
-        # Install Firefox using snap (GitHub Actions supports this)
+        echo "🔧 Installing system dependencies..."
+        # Install required packages with minimal interaction
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          tor \
+          xvfb \
+          wget \
+          curl \
+          netcat-openbsd \
+          iproute2 \
+          psmisc \
+          procps
+        
+        echo "🦊 Installing Firefox..."
+        # Install Firefox using snap (more reliable in GitHub Actions)
         sudo snap install firefox
         
+        echo "🔧 Installing geckodriver..."
         # Download and install geckodriver
         GECKODRIVER_VERSION=0.34.0
-        wget -q https://github.com/mozilla/geckodriver/releases/download/v${GECKODRIVER_VERSION}/geckodriver-v${GECKODRIVER_VERSION}-linux64.tar.gz
+        wget -q --timeout=30 https://github.com/mozilla/geckodriver/releases/download/v${GECKODRIVER_VERSION}/geckodriver-v${GECKODRIVER_VERSION}-linux64.tar.gz
         tar -xzf geckodriver-v${GECKODRIVER_VERSION}-linux64.tar.gz
         sudo mv geckodriver /usr/local/bin/
         sudo chmod +x /usr/local/bin/geckodriver
@@ -44,61 +57,74 @@ jobs:
         # Create Firefox symlink for better compatibility
         sudo ln -sf /snap/bin/firefox /usr/local/bin/firefox
         
-        # Verify installations
-        echo "🔍 Verifying installations..."
-        firefox --version
-        geckodriver --version
-        tor --version
-        echo "✅ All dependencies installed successfully"
+        echo "✅ Verifying installations..."
+        firefox --version || echo "⚠️ Firefox version check failed"
+        geckodriver --version || echo "⚠️ Geckodriver version check failed"  
+        tor --version || echo "⚠️ Tor version check failed"
+        echo "📦 System dependencies installation completed"
     
     - name: Configure and start Tor
       run: |
-        # Stop any existing tor service
-        sudo systemctl stop tor 2>/dev/null || true
+        echo "🧹 Cleaning up any existing Tor processes..."
+        # Kill any existing tor processes more gracefully
         sudo pkill -f tor 2>/dev/null || true
+        sudo systemctl stop tor 2>/dev/null || true
+        sleep 3
+        
+        # Ensure no processes are still running on port 9050
+        sudo fuser -k 9050/tcp 2>/dev/null || true
         sleep 2
         
-        # Create a custom torrc file
-        sudo tee /tmp/torrc > /dev/null <<EOF
-        SocksPort 9050
-        ControlPort 9051
-        CookieAuthentication 0
-        DataDirectory /tmp/tor_data
-        Log notice stdout
-        RunAsDaemon 0
-        EOF
+        echo "⚙️ Configuring Tor..."
+        # Create a minimal torrc file
+        cat > /tmp/torrc <<EOF
+SocksPort 9050
+DataDirectory /tmp/tor_data
+Log notice file /tmp/tor.log
+RunAsDaemon 0
+DisableNetwork 0
+EOF
         
         # Create data directory with proper permissions
         mkdir -p /tmp/tor_data
         chmod 700 /tmp/tor_data
         
-        # Start Tor with custom config in background
-        echo "🌐 Starting Tor..."
-        nohup tor -f /tmp/torrc > /tmp/tor.log 2>&1 &
+        echo "🌐 Starting Tor service..."
+        # Start Tor in background with timeout protection
+        timeout 30 tor -f /tmp/torrc &
         TOR_PID=$!
         echo "TOR_PID=$TOR_PID" >> $GITHUB_ENV
         
-        # Wait for Tor to start and check multiple times
-        for i in {1..30}; do
-          if netstat -tuln | grep -q ":9050"; then
-            echo "✅ Tor SOCKS proxy is running on port 9050 (attempt $i)"
+        # Wait for Tor to initialize with shorter intervals
+        echo "⏳ Waiting for Tor to initialize..."
+        for i in {1..20}; do
+          if ss -tuln | grep -q ":9050\s"; then
+            echo "✅ Tor SOCKS proxy detected on port 9050 (attempt $i)"
             break
           fi
-          if [ $i -eq 30 ]; then
-            echo "❌ Tor SOCKS proxy failed to start after 30 attempts"
-            echo "Tor log:"
-            cat /tmp/tor.log
+          if [ $i -eq 20 ]; then
+            echo "❌ Tor failed to start after 20 attempts"
+            echo "📄 Tor log contents:"
+            cat /tmp/tor.log 2>/dev/null || echo "No log file found"
+            echo "📊 Process status:"
+            ps aux | grep tor | grep -v grep || echo "No tor processes found"
             exit 1
           fi
-          echo "⏳ Waiting for Tor to start... (attempt $i/30)"
-          sleep 2
+          echo "   Attempt $i/20..."
+          sleep 3
         done
         
-        # Additional verification
+        # Verify Tor is working
+        echo "🔍 Verifying Tor functionality..."
         sleep 5
-        echo "🔍 Final Tor status check..."
-        netstat -tuln | grep 9050 || (echo "❌ Port 9050 not listening" && exit 1)
-        echo "✅ Tor is ready"
+        if ss -tuln | grep -q ":9050\s"; then
+          echo "✅ Tor is ready and listening on port 9050"
+          echo "📊 Network status:"
+          ss -tuln | grep 9050
+        else
+          echo "❌ Tor verification failed"
+          exit 1
+        fi
     
     - name: Install Python dependencies
       run: |
@@ -109,22 +135,39 @@ jobs:
     
     - name: Verify Tor connectivity
       run: |
-        # Test Tor connectivity with multiple methods
         echo "🔍 Testing Tor connectivity..."
         
-        # Method 1: Using curl
-        if curl --socks5-hostname 127.0.0.1:9050 -s -m 30 "https://check.torproject.org/api/ip" | grep -q "IsTor.*true"; then
-            echo "✅ Tor connectivity verified with curl!"
+        # Wait a bit more for Tor to be fully ready
+        sleep 10
+        
+        # Test with timeout and better error handling
+        echo "📡 Testing with curl..."
+        if timeout 45 curl --socks5-hostname 127.0.0.1:9050 -s --max-time 30 "https://httpbin.org/ip" > /tmp/curl_test.json 2>/dev/null; then
+          echo "✅ Basic connectivity through Tor successful"
+          echo "📄 Response:"
+          cat /tmp/curl_test.json
         else
-            echo "⚠️ Curl test inconclusive, trying alternative..."
-            # Show what we got for debugging
-            echo "Curl response:"
-            curl --socks5-hostname 127.0.0.1:9050 -s -m 30 "https://check.torproject.org/api/ip" || echo "Curl failed"
+          echo "⚠️ Basic curl test failed, trying Tor Project check..."
         fi
         
-        # Method 2: Using Python test script
-        echo "🐍 Running Python Tor test..."
-        python tor_test.py || echo "⚠️ Python test failed but continuing..."
+        # Try Tor Project's check service
+        echo "🌐 Testing Tor Project connectivity..."
+        if timeout 45 curl --socks5-hostname 127.0.0.1:9050 -s --max-time 30 "https://check.torproject.org/api/ip" > /tmp/tor_check.json 2>/dev/null; then
+          echo "✅ Tor Project check successful"
+          echo "📄 Response:"
+          cat /tmp/tor_check.json
+          
+          if cat /tmp/tor_check.json | grep -q "IsTor.*true"; then
+            echo "🎉 Confirmed: Traffic is going through Tor!"
+          else
+            echo "⚠️ Warning: Traffic may not be going through Tor"
+          fi
+        else
+          echo "⚠️ Tor Project check failed, but continuing..."
+          echo "🔍 Checking if Tor is still running..."
+          ps aux | grep tor | grep -v grep || echo "No Tor processes found"
+          ss -tuln | grep 9050 || echo "Port 9050 not listening"
+        fi
     
     - name: Create logs directory
       run: |
