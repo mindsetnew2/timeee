@@ -64,69 +64,94 @@ jobs:
         echo "📦 System dependencies installation completed"
     
     - name: Configure and start Tor
+      timeout-minutes: 5
       run: |
-        echo "🧹 Cleaning up any existing Tor processes..."
-        # Kill any existing tor processes more gracefully
-        sudo pkill -f tor 2>/dev/null || true
-        sudo systemctl stop tor 2>/dev/null || true
-        sleep 3
+        set -e  # Exit on any error
         
-        # Ensure no processes are still running on port 9050
-        sudo fuser -k 9050/tcp 2>/dev/null || true
+        echo "🧹 Cleaning up any existing Tor processes..."
+        # More aggressive cleanup
+        sudo pkill -9 -f tor 2>/dev/null || true
+        sudo systemctl stop tor 2>/dev/null || true
+        sudo systemctl disable tor 2>/dev/null || true
+        
+        # Kill anything using port 9050
+        sudo lsof -ti:9050 | xargs -r sudo kill -9 2>/dev/null || true
         sleep 2
         
-        echo "⚙️ Configuring Tor..."
-        # Create a minimal torrc file
-        cat > /tmp/torrc <<EOF
+        echo "⚙️ Configuring Tor with minimal settings..."
+        # Create ultra-minimal torrc
+        cat > /tmp/torrc <<'EOF'
 SocksPort 9050
 DataDirectory /tmp/tor_data
-Log notice file /tmp/tor.log
 RunAsDaemon 0
-DisableNetwork 0
 EOF
         
-        # Create data directory with proper permissions
+        # Create data directory
+        rm -rf /tmp/tor_data 2>/dev/null || true
         mkdir -p /tmp/tor_data
         chmod 700 /tmp/tor_data
         
-        echo "🌐 Starting Tor service..."
-        # Start Tor in background with timeout protection
-        timeout 30 tor -f /tmp/torrc &
-        TOR_PID=$!
-        echo "TOR_PID=$TOR_PID" >> $GITHUB_ENV
+        echo "🌐 Starting Tor with timeout protection..."
+        # Start Tor with strict timeout and background it immediately
+        (timeout 60 tor -f /tmp/torrc --quiet > /tmp/tor.log 2>&1 &)
+        sleep 1
         
-        # Wait for Tor to initialize with shorter intervals
-        echo "⏳ Waiting for Tor to initialize..."
-        for i in {1..20}; do
-          if ss -tuln | grep -q ":9050\s"; then
-            echo "✅ Tor SOCKS proxy detected on port 9050 (attempt $i)"
+        # Get the actual Tor PID
+        TOR_PID=$(pgrep -f "tor -f /tmp/torrc" || echo "")
+        if [ -n "$TOR_PID" ]; then
+          echo "TOR_PID=$TOR_PID" >> $GITHUB_ENV
+          echo "✅ Tor started with PID: $TOR_PID"
+        else
+          echo "❌ Failed to get Tor PID"
+        fi
+        
+        echo "⏳ Waiting for Tor to bind to port 9050..."
+        # Quick check loop with shorter timeout
+        for i in {1..10}; do
+          if sudo lsof -i:9050 >/dev/null 2>&1; then
+            echo "✅ Tor is listening on port 9050 (attempt $i)"
             break
           fi
-          if [ $i -eq 20 ]; then
-            echo "❌ Tor failed to start after 20 attempts"
-            echo "📄 Tor log contents:"
-            cat /tmp/tor.log 2>/dev/null || echo "No log file found"
-            echo "📊 Process status:"
-            ps aux | grep tor | grep -v grep || echo "No tor processes found"
+          if [ $i -eq 10 ]; then
+            echo "❌ Tor failed to bind to port 9050"
+            echo "📄 Tor log:"
+            cat /tmp/tor.log 2>/dev/null || echo "No log available"
+            echo "📊 Process check:"
+            pgrep -f tor || echo "No tor processes"
             exit 1
           fi
-          echo "   Attempt $i/20..."
-          sleep 3
+          sleep 2
         done
         
-        # Verify Tor is working
-        echo "🔍 Verifying Tor functionality..."
+        echo "🎉 Tor startup completed successfully"
+    
+    - name: Alternative Tor setup (if main setup fails)
+      if: failure()
+      timeout-minutes: 3
+      run: |
+        echo "🔄 Attempting alternative Tor setup..."
+        
+        # Try using system Tor service instead
+        echo "📦 Trying system Tor service..."
+        sudo systemctl start tor || true
         sleep 5
-        if ss -tuln | grep -q ":9050\s"; then
-          echo "✅ Tor is ready and listening on port 9050"
-          echo "📊 Network status:"
-          ss -tuln | grep 9050
+        
+        # Check if it's running
+        if sudo systemctl is-active tor >/dev/null 2>&1; then
+          echo "✅ System Tor service is active"
+          
+          # Check if port is available
+          if sudo lsof -i:9050 >/dev/null 2>&1; then
+            echo "✅ Tor is listening on port 9050"
+            echo "TOR_SYSTEM_SERVICE=true" >> $GITHUB_ENV
+          else
+            echo "❌ Tor service running but not listening on port 9050"
+            exit 1
+          fi
         else
-          echo "❌ Tor verification failed"
+          echo "❌ Alternative Tor setup also failed"
           exit 1
         fi
-    
-    - name: Install Python dependencies
       run: |
         echo "📦 Installing Python dependencies..."
         pip install --upgrade pip
