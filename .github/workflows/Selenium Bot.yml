@@ -6,7 +6,7 @@ on:
       target_url:
         description: 'URL to visit'
         required: true
-        default: 'https://x.com/Hitansh54/status/1931754193489957133'
+        default: 'https://httpbin.org/ip'
         type: string
   schedule:
     # Run every 5 hours (at 00:00, 05:00, 10:00, 15:00, 20:00 UTC)
@@ -28,7 +28,10 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y tor firefox
+        sudo apt-get install -y tor
+        
+        # Install Firefox using snap
+        sudo snap install firefox
         
         # Download and install geckodriver
         GECKODRIVER_VERSION=0.34.0
@@ -37,9 +40,13 @@ jobs:
         sudo mv geckodriver /usr/local/bin/
         sudo chmod +x /usr/local/bin/geckodriver
         
+        # Create Firefox symlink for compatibility
+        sudo ln -sf /snap/bin/firefox /usr/bin/firefox
+        
         # Verify installations
         firefox --version
         geckodriver --version
+        tor --version
     
     - name: Install Python dependencies
       run: |
