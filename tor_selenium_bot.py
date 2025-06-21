@@ -3,6 +3,7 @@ import random
 import json
 import logging
 import os
+import socket
 from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
@@ -87,10 +88,37 @@ class TorSeleniumBot:
             json.dump(default_config, f, indent=2, ensure_ascii=False)
         
         self.logger.info(f"📝 Created default URL configuration file: {config_file}")
-        
-    def start_tor(self):
-        """Start Tor service"""
+    
+    def check_tor_running(self, port=9050):
+        """Check if Tor is already running on the specified port"""
         try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex(('127.0.0.1', port))
+            sock.close()
+            return result == 0
+        except Exception:
+            return False
+    
+    def start_tor(self):
+        """Start Tor service or check if already running"""
+        try:
+            # Check if Tor is already running (e.g., in GitHub Actions)
+            if os.environ.get('TOR_ALREADY_RUNNING') == 'true':
+                self.logger.info("🌐 Tor is already running (detected from environment)")
+                if self.check_tor_running():
+                    self.logger.info("✅ Tor SOCKS proxy confirmed running on port 9050")
+                    return True
+                else:
+                    self.logger.error("❌ Environment says Tor is running but port 9050 is not accessible")
+                    return False
+            
+            # Check if Tor is already running on port 9050
+            if self.check_tor_running():
+                self.logger.info("🌐 Tor is already running on port 9050")
+                return True
+            
+            # Try to start Tor service
             self.logger.info("🌐 Starting Tor service...")
             subprocess.run(['sudo', 'service', 'tor', 'start'], check=True, capture_output=True)
             time.sleep(5)  # Wait for Tor to start
@@ -106,6 +134,17 @@ class TorSeleniumBot:
                 
         except subprocess.CalledProcessError as e:
             self.logger.error(f"❌ Failed to start Tor: {e}")
+            # Try to check if Tor is running anyway
+            if self.check_tor_running():
+                self.logger.info("✅ Tor appears to be running despite service command failure")
+                return True
+            return False
+        except Exception as e:
+            self.logger.error(f"❌ Error checking/starting Tor: {e}")
+            # Try to check if Tor is running anyway
+            if self.check_tor_running():
+                self.logger.info("✅ Tor appears to be running despite error")
+                return True
             return False
     
     def setup_firefox_with_tor(self):
@@ -332,9 +371,9 @@ def main():
     
     bot.logger.info(f"⚙️  Configuration: {cycles_per_url} cycles per URL, {min_delay}-{max_delay}s delays")
     
-    # Start Tor service
+    # Start/check Tor service
     if not bot.start_tor():
-        bot.logger.error("❌ Failed to start Tor service. Exiting...")
+        bot.logger.error("❌ Failed to start or verify Tor service. Exiting...")
         sys.exit(1)
     
     total_successful_cycles = 0
@@ -384,13 +423,16 @@ def main():
         bot.logger.info(f"❌ Total failed cycles: {total_failed_cycles}")
         bot.logger.info(f"📊 Success rate: {(total_successful_cycles/(total_successful_cycles + total_failed_cycles)*100):.1f}%" if (total_successful_cycles + total_failed_cycles) > 0 else "N/A")
         
-        # Stop Tor service
-        try:
-            bot.logger.info("🌐 Stopping Tor service...")
-            subprocess.run(['sudo', 'service', 'tor', 'stop'], check=True, capture_output=True)
-            bot.logger.info("✅ Tor service stopped successfully")
-        except Exception as e:
-            bot.logger.error(f"❌ Could not stop Tor service: {e}")
+        # Only try to stop Tor if we started it ourselves
+        if not os.environ.get('TOR_ALREADY_RUNNING') == 'true':
+            try:
+                bot.logger.info("🌐 Stopping Tor service...")
+                subprocess.run(['sudo', 'service', 'tor', 'stop'], check=True, capture_output=True)
+                bot.logger.info("✅ Tor service stopped successfully")
+            except Exception as e:
+                bot.logger.error(f"❌ Could not stop Tor service: {e}")
+        else:
+            bot.logger.info("🌐 Leaving Tor running (was started externally)")
         
         bot.logger.info("🏁 Bot execution completed")
 
