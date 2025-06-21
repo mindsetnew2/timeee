@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       target_url:
-        description: 'URL to visit'
-        required: true
-        default: 'https://httpbin.org/ip'
+        description: 'URL to visit (optional - will use urls_config.json)'
+        required: false
+        default: ''
         type: string
   schedule:
     # Run every 5 hours (at 00:00, 05:00, 10:00, 15:00, 20:00 UTC)
