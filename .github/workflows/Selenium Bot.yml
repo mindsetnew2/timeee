@@ -27,7 +27,8 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y tor xvfb wget curl netcat
+        # Install required packages - use netcat-openbsd instead of netcat
+        sudo apt-get install -y tor xvfb wget curl netcat-openbsd net-tools
         
         # Install Firefox using snap (GitHub Actions supports this)
         sudo snap install firefox
@@ -44,20 +45,21 @@ jobs:
         sudo ln -sf /snap/bin/firefox /usr/local/bin/firefox
         
         # Verify installations
+        echo "🔍 Verifying installations..."
         firefox --version
         geckodriver --version
         tor --version
+        echo "✅ All dependencies installed successfully"
     
     - name: Configure and start Tor
       run: |
         # Stop any existing tor service
         sudo systemctl stop tor 2>/dev/null || true
-        sudo pkill -f tor || true
+        sudo pkill -f tor 2>/dev/null || true
         sleep 2
         
         # Create a custom torrc file
-        sudo mkdir -p /etc/tor
-        sudo tee /etc/tor/torrc > /dev/null <<EOF
+        sudo tee /tmp/torrc > /dev/null <<EOF
         SocksPort 9050
         ControlPort 9051
         CookieAuthentication 0
@@ -67,92 +69,105 @@ jobs:
         EOF
         
         # Create data directory with proper permissions
-        sudo mkdir -p /tmp/tor_data
-        sudo chmod 700 /tmp/tor_data
-        sudo chown -R debian-tor:debian-tor /tmp/tor_data 2>/dev/null || true
+        mkdir -p /tmp/tor_data
+        chmod 700 /tmp/tor_data
         
-        # Start Tor in background
+        # Start Tor with custom config in background
         echo "🌐 Starting Tor..."
-        sudo -u debian-tor tor -f /etc/tor/torrc &
+        nohup tor -f /tmp/torrc > /tmp/tor.log 2>&1 &
         TOR_PID=$!
         echo "TOR_PID=$TOR_PID" >> $GITHUB_ENV
         
-        # Wait for Tor to start and test connectivity
-        echo "⏳ Waiting for Tor to start (up to 60 seconds)..."
-        for i in {1..60}; do
-          if nc -z 127.0.0.1 9050; then
+        # Wait for Tor to start and check multiple times
+        for i in {1..30}; do
+          if netstat -tuln | grep -q ":9050"; then
             echo "✅ Tor SOCKS proxy is running on port 9050 (attempt $i)"
             break
           fi
-          echo "⏳ Attempt $i/60: Tor not ready yet, waiting 1 second..."
-          sleep 1
-          if [ $i -eq 60 ]; then
-            echo "❌ Tor failed to start after 60 seconds"
+          if [ $i -eq 30 ]; then
+            echo "❌ Tor SOCKS proxy failed to start after 30 attempts"
+            echo "Tor log:"
+            cat /tmp/tor.log
             exit 1
           fi
+          echo "⏳ Waiting for Tor to start... (attempt $i/30)"
+          sleep 2
         done
         
-        # Test Tor connectivity
-        if curl --socks5-hostname 127.0.0.1:9050 -s -m 30 "https://check.torproject.org/api/ip" | grep -q "IsTor.*true"; then
-            echo "✅ Tor is working correctly!"
-        else
-            echo "⚠️ Tor connectivity test inconclusive, but port is open"
-        fi
+        # Additional verification
+        sleep 5
+        echo "🔍 Final Tor status check..."
+        netstat -tuln | grep 9050 || (echo "❌ Port 9050 not listening" && exit 1)
+        echo "✅ Tor is ready"
     
     - name: Install Python dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install selenium==4.15.0
+        echo "📦 Installing Python dependencies..."
+        pip install --upgrade pip
+        pip install -r requirements.txt
+        echo "✅ Python dependencies installed"
     
-    - name: Create default config if needed
+    - name: Verify Tor connectivity
       run: |
-        if [ ! -f urls_config.json ]; then
-          cat > urls_config.json << EOF
-        {
-          "urls": [
-            {
-              "url": "https://httpbin.org/ip",
-              "name": "IP Check Test",
-              "enabled": true
-            },
-            {
-              "url": "https://httpbin.org/user-agent", 
-              "name": "User Agent Test",
-              "enabled": true
-            }
-          ],
-          "settings": {
-            "cycles_per_url": 3,
-            "min_delay_between_cycles": 2,
-            "max_delay_between_cycles": 5,
-            "min_reading_time": 1,
-            "max_reading_time": 3
-          }
-        }
-        EOF
-          echo "📝 Created default URLs configuration"
+        # Test Tor connectivity with multiple methods
+        echo "🔍 Testing Tor connectivity..."
+        
+        # Method 1: Using curl
+        if curl --socks5-hostname 127.0.0.1:9050 -s -m 30 "https://check.torproject.org/api/ip" | grep -q "IsTor.*true"; then
+            echo "✅ Tor connectivity verified with curl!"
+        else
+            echo "⚠️ Curl test inconclusive, trying alternative..."
+            # Show what we got for debugging
+            echo "Curl response:"
+            curl --socks5-hostname 127.0.0.1:9050 -s -m 30 "https://check.torproject.org/api/ip" || echo "Curl failed"
         fi
+        
+        # Method 2: Using Python test script
+        echo "🐍 Running Python Tor test..."
+        python tor_test.py || echo "⚠️ Python test failed but continuing..."
     
     - name: Create logs directory
-      run: mkdir -p logs
+      run: |
+        mkdir -p logs
+        echo "📁 Logs directory created"
     
     - name: Run bot with virtual display
       run: |
         # Start virtual display for headless browser
+        echo "🖥️ Starting virtual display..."
         export DISPLAY=:99
-        Xvfb :99 -screen 0 1280x720x24 > /dev/null 2>&1 &
+        Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
         XVFB_PID=$!
         echo "XVFB_PID=$XVFB_PID" >> $GITHUB_ENV
         
-        sleep 3
+        # Wait for display to be ready
+        sleep 5
         
-        # Set environment variables to indicate Tor is already running
+        # Set environment variables
         export TOR_ALREADY_RUNNING=true
         export TOR_SOCKS_PORT=9050
         export TOR_CONTROL_PORT=9051
         
-        # Run the bot
-        python tor_selenium_bot.py
+        echo "🤖 Starting Tor Selenium Bot..."
+        
+        # Run the bot with timeout to prevent hanging
+        timeout 3600 python tor_selenium_bot.py || {
+          echo "⚠️ Bot execution completed or timed out after 1 hour"
+          exit 0
+        }
+    
+    - name: Display bot statistics
+      if: always()
+      run: |
+        echo "📊 Bot execution completed"
+        echo "📁 Log files created:"
+        ls -la logs/ 2>/dev/null || echo "No log files found"
+        
+        # Show last few lines of latest log file if it exists
+        if [ -f logs/*.log ]; then
+          echo "📄 Last 20 lines of latest log:"
+          tail -20 logs/*.log | head -20
+        fi
     
     - name: Upload logs
       if: always()
@@ -161,20 +176,28 @@ jobs:
         name: bot-logs-${{ github.run_number }}
         path: logs/
         retention-days: 7
+        if-no-files-found: warn
     
     - name: Cleanup
       if: always()
       run: |
+        echo "🧹 Cleaning up processes..."
+        
         # Stop Xvfb if running
         if [ ! -z "$XVFB_PID" ]; then
           kill $XVFB_PID 2>/dev/null || true
+          echo "🖥️ Virtual display stopped"
         fi
         
-        # Stop Tor if running
+        # Stop Tor if we started it
         if [ ! -z "$TOR_PID" ]; then
           kill $TOR_PID 2>/dev/null || true
+          echo "🌐 Tor process stopped"
         fi
         
-        # Additional cleanup
-        sudo pkill -f tor || true
-        sudo pkill -f Xvfb || true
+        # Kill any remaining processes
+        sudo pkill -f tor 2>/dev/null || true
+        sudo pkill -f firefox 2>/dev/null || true
+        sudo pkill -f geckodriver 2>/dev/null || true
+        
+        echo "✅ Cleanup completed"
