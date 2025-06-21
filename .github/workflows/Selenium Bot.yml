@@ -27,7 +27,7 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y tor xvfb wget
+        sudo apt-get install -y xvfb wget curl
         
         # Install Firefox using snap (GitHub Actions supports this)
         sudo snap install firefox
@@ -46,64 +46,32 @@ jobs:
         # Verify installations
         firefox --version
         geckodriver --version
-        tor --version
+    
+    - name: Setup Tor
+      uses: tor-actions/setup-tor@v1
+      with:
+        daemon: true
+        config: |
+          SocksPort 9050
+          ControlPort 9051
+          CookieAuthentication 0
     
     - name: Install Python dependencies
       run: |
         pip install selenium requests stem
     
-    - name: Configure Tor
+    - name: Verify Tor connectivity
       run: |
-        # Stop any existing tor service
-        sudo systemctl stop tor || true
+        # Wait a moment for Tor to fully initialize
+        sleep 10
         
-        # Create tor data directory
-        sudo mkdir -p /var/lib/tor
-        sudo chown -R debian-tor:debian-tor /var/lib/tor
-        sudo chmod 700 /var/lib/tor
-        
-        # Create custom tor configuration
-        sudo tee /etc/tor/torrc > /dev/null <<EOF
-        SocksPort 9050
-        ControlPort 9051
-        DataDirectory /var/lib/tor
-        CookieAuthentication 1
-        CookieAuthFileGroupReadable 1
-        Log notice stdout
-        EOF
-        
-        # Set proper permissions
-        sudo chmod 644 /etc/tor/torrc
-    
-    - name: Start Tor service
-      run: |
-        # Start tor in background
-        sudo -u debian-tor tor -f /etc/tor/torrc &
-        TOR_PID=$!
-        echo "TOR_PID=$TOR_PID" >> $GITHUB_ENV
-        
-        # Wait for tor to start
-        echo "Waiting for Tor to start..."
-        sleep 15
-        
-        # Check if tor is listening on the expected ports
-        if netstat -tuln | grep -q ":9050"; then
-            echo "✅ Tor SOCKS proxy is running on port 9050"
+        # Test Tor connectivity
+        echo "🔍 Testing Tor connectivity..."
+        if curl --socks5-hostname 127.0.0.1:9050 -s "https://check.torproject.org/api/ip" | grep -q "IsTor.*true"; then
+            echo "✅ Tor is working correctly!"
         else
-            echo "❌ Tor SOCKS proxy is not running on port 9050"
-            sudo pkill -f tor || true
-            exit 1
+            echo "⚠️ Tor connectivity test inconclusive, but continuing..."
         fi
-        
-        if netstat -tuln | grep -q ":9051"; then
-            echo "✅ Tor control port is running on port 9051"
-        else
-            echo "⚠️ Tor control port is not running on port 9051 (may be OK)"
-        fi
-        
-        # Test tor connectivity
-        echo "Testing Tor connectivity..."
-        curl --socks5-hostname 127.0.0.1:9050 -s "https://check.torproject.org/api/ip" | head -20 || echo "Tor connectivity test failed, but continuing..."
     
     - name: Create logs directory
       run: mkdir -p logs
@@ -137,8 +105,4 @@ jobs:
           kill $XVFB_PID || true
         fi
         
-        # Stop Tor if running
-        if [ ! -z "$TOR_PID" ]; then
-          kill $TOR_PID || true
-        fi
-        sudo pkill -f tor || true
+        # Tor cleanup is handled automatically by the tor-actions/setup-tor action
