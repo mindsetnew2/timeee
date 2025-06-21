@@ -85,7 +85,7 @@ jobs:
     
     - name: Install Python dependencies
       run: |
-        pip install selenium requests stem
+        pip install -r requirements.txt
     
     - name: Verify Tor connectivity
       run: |
@@ -111,6 +111,11 @@ jobs:
         echo "XVFB_PID=$XVFB_PID" >> $GITHUB_ENV
         
         sleep 5
+        
+        # Set environment variable to indicate Tor is already running
+        export TOR_ALREADY_RUNNING=true
+        export TOR_SOCKS_PORT=9050
+        export TOR_CONTROL_PORT=9051
         
         # Run the bot
         python tor_selenium_bot.py
