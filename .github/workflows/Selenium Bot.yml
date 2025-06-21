@@ -27,18 +27,24 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y tor firefox-esr xvfb
+        sudo apt-get install -y tor xvfb wget
+        
+        # Install Firefox using snap (GitHub Actions supports this)
+        sudo snap install firefox
         
         # Download and install geckodriver
         GECKODRIVER_VERSION=0.34.0
-        wget https://github.com/mozilla/geckodriver/releases/download/v${GECKODRIVER_VERSION}/geckodriver-v${GECKODRIVER_VERSION}-linux64.tar.gz
+        wget -q https://github.com/mozilla/geckodriver/releases/download/v${GECKODRIVER_VERSION}/geckodriver-v${GECKODRIVER_VERSION}-linux64.tar.gz
         tar -xzf geckodriver-v${GECKODRIVER_VERSION}-linux64.tar.gz
         sudo mv geckodriver /usr/local/bin/
         sudo chmod +x /usr/local/bin/geckodriver
         rm geckodriver-v${GECKODRIVER_VERSION}-linux64.tar.gz
         
+        # Create Firefox symlink for better compatibility
+        sudo ln -sf /snap/bin/firefox /usr/local/bin/firefox
+        
         # Verify installations
-        firefox --version || firefox-esr --version
+        firefox --version
         geckodriver --version
         tor --version
     
