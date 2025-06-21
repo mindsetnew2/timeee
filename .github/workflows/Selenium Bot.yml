@@ -1,0 +1,80 @@
+name: Tor Selenium Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'URL to visit'
+        required: true
+        default: 'https://httpbin.org/ip'
+        type: string
+  schedule:
+    # Run daily at 12:00 UTC (optional)
+    - cron: '0 12 * * *'
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y tor firefox-esr
+        
+        # Download and install geckodriver
+        wget https://github.com/mozilla/geckodriver/releases/download/v0.33.0/geckodriver-v0.33.0-linux64.tar.gz
+        tar -xzf geckodriver-v0.33.0-linux64.tar.gz
+        sudo mv geckodriver /usr/local/bin/
+        sudo chmod +x /usr/local/bin/geckodriver
+    
+    - name: Install Python dependencies
+      run: |
+        pip install selenium
+    
+    - name: Configure Tor
+      run: |
+        # Create tor configuration
+        sudo tee /etc/tor/torrc > /dev/null <<EOF
+        SocksPort 9050
+        ControlPort 9051
+        DataDirectory /var/lib/tor
+        RunAsDaemon 1
+        EOF
+        
+        # Set proper permissions
+        sudo chown -R debian-tor:debian-tor /var/lib/tor
+        sudo chmod 700 /var/lib/tor
+    
+    - name: Start Tor service
+      run: |
+        sudo systemctl enable tor
+        sudo systemctl start tor
+        sleep 10
+        # Verify Tor is running
+        sudo systemctl status tor
+    
+    - name: Run bot
+      run: |
+        python tor_selenium_bot.py
+    
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: bot-logs
+        path: logs/
+        retention-days: 7
+    
+    - name: Stop Tor service
+      if: always()
+      run: |
+        sudo systemctl stop tor
